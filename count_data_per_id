@@ -1,0 +1,8 @@
+import pandas as pd
+
+df = pd.read_csv('CardiacPatientData_Cleaned.csv')
+pd.set_option('display.max_rows', None)
+record_counts = df['ID'].value_counts()
+
+print("每個病人的紀錄筆數分布：")
+print(record_counts)

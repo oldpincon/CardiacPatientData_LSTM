@@ -23,7 +23,7 @@ X_list = []
 y_list = []
 patient_ids = []
 
-# 設定序列長度 (參考 LSTM_2.py 的時間步概念)
+# 設定序列長度 (max_len)，根據 count_data_per_id 的分布，我們選擇 10 作為合理的截斷長度
 max_len = 10
 
 # 3. 依照 ID 分組建立病人序列資料
@@ -37,10 +37,11 @@ for pid, group in df.groupby('ID'):
     patient_ids.append(pid)
 
 # 補齊序列長度[cite: 3]
-X_padded = pad_sequences(X_list, maxlen=max_len,
-                         dtype='float32', padding='post')
+X_padded = pad_sequences(X_list, maxlen = max_len, dtype = 'float32', padding = 'pre')
 y_final = np.array(y_list)
 patient_ids = np.array(patient_ids)
+
+#檢視code到這裡------------------------------------------------------------------------------------
 
 # 4. 嚴謹切分：按病人 ID 切分，確保測試集是模型沒見過的病人[cite: 1]
 gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
