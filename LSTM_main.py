@@ -91,7 +91,7 @@ print(f"驗證集 IHCA 比例：{y_val.mean():.2f}（若接近0或1代表驗證�
 # ============================================================
 classes = np.array([0, 1])
 weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train)
-class_weights = {0: weights[0], 1: weights[1] * 1.5}
+class_weights = {0: weights[0], 1: weights[1] * 1.75}
 print(f"自動計算的 Class Weights: {class_weights}")
 
 # ============================================================
@@ -100,11 +100,11 @@ print(f"自動計算的 Class Weights: {class_weights}")
 model = Sequential([
     Input(shape=(MAX_LEN, len(FEATURES))),
     Masking(mask_value=0.0),
-    LSTM(units=50, return_sequences=True),
-    Dropout(0.2),
-    LSTM(units=50, return_sequences=False),
-    Dropout(0.2),
-    Dense(units=32, activation='relu'),
+    LSTM(units=96, return_sequences=True),
+    Dropout(0.3),
+    LSTM(units=96, return_sequences=False),
+    Dropout(0.3),
+    Dense(units=64, activation='relu'),
     Dense(units=1, activation='sigmoid')
 ])
 
@@ -112,7 +112,7 @@ model = Sequential([
 # 9. 編譯模型
 # ============================================================
 model.compile(
-    optimizer='adam',
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.002666),
     loss='binary_crossentropy',
     metrics=[
         tf.keras.metrics.Recall(name='recall'),
