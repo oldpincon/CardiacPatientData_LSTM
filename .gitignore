@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# 虛擬環境
+.venv/
+
+# 執行紀錄（setup / 同步 / 訓練過程輸出）
+setup_log.txt
+git_sync_log.txt
+run_main_log.txt
+log_*.txt
