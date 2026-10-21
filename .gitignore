@@ -10,3 +10,6 @@ setup_log.txt
 git_sync_log.txt
 run_main_log.txt
 log_*.txt
+
+# Optuna 中斷續跑用的 study 資料庫
+optuna_*.db

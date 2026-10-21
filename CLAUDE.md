@@ -21,7 +21,7 @@
 
 ## 舊程式（結果不可報告）
 - `LSTM_main.py`、`LSTM_tuning.py`：在全部 112 人上調參，不是 nested。
-- `LSTM_nested_cv_full.py`：空檔。
+- `LSTM_nested_cv_full.py`：v1 nested CV（2026-09-17 事後重建的版本），讀 Cleaned CSV，產生下列舊結果檔與 `feature_importance_*.csv`、`truncation_sweep.csv`。
 - `results_rf_baseline.csv`、`results_lr_baseline.csv`、`results_lstm_nested.csv`、`results_news_baseline.csv`：用了有捷徑的 Cleaned CSV。
 
 ## 執行
