@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# 虛擬環境
+.venv/
+
+# 執行紀錄（setup / 同步 / 訓練過程輸出）
+setup_log.txt
+git_sync_log.txt
+run_main_log.txt
+log_*.txt
+
+# Optuna 中斷續跑用的 study 資料庫
+optuna_*.db
+
+# nested CV 每折存檔（中斷續跑用）
+ckpt_*/

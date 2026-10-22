@@ -1,0 +1,30 @@
+{
+  "analysis": "primary",
+  "n_patients": 112,
+  "n_ihca": 19,
+  "repeats": 3,
+  "trials": 40,
+  "quick_test": false,
+  "auc_mean": 0.8071637426900584,
+  "auc_sd": 0.12250835156621624,
+  "recall_mean": 0.6611111111111111,
+  "recall_sd": 0.3077482651600082,
+  "precision_mean": 0.4599206349206349,
+  "precision_sd": 0.24885373214432524,
+  "f1_mean": 0.506011766011766,
+  "f1_sd": 0.21059323805416397,
+  "probe_n_records_auc_mean": 0.6961988304093567,
+  "probe_n_records_auc_sd": 0.1716819563514391,
+  "probe_lab_missing_auc_mean": 0.5946393762183236,
+  "probe_lab_missing_auc_sd": 0.15564557552976996,
+  "pooled_auc_per_repeat": [
+    0.7815506508205999,
+    0.730050933786078,
+    0.8064516129032259
+  ],
+  "pooled_auc_repeat1_95ci": [
+    0.6210745603602746,
+    0.916177512963227
+  ],
+  "pooled_auc_repeat_averaged": 0.8177702320316922
+}
