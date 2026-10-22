@@ -13,3 +13,6 @@ log_*.txt
 
 # Optuna 中斷續跑用的 study 資料庫
 optuna_*.db
+
+# nested CV 每折存檔（中斷續跑用）
+ckpt_*/

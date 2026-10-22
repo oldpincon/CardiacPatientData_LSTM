@@ -13,9 +13,10 @@
 - 每位病人取最後 `MAX_LEN = 10` 筆，padding 用 `'pre'`。
 
 ## 主要程式（v2 修補版，可報告的結果）
-- `LSTM_nested_cv_v2.py`：nested CV（外層 5 折、內層 3 折加 Optuna）。缺失值處理是：不合理值 → NaN → 病人內 LOCF → 訓練折中位數。epoch 數取內層最佳 epoch 的中位數，門檻用內層 OOF 的 Youden 指數。輸出 OOF 預測、permutation importance（只在真實時間步之間打亂）、捷徑探針。
-- `baselines_nested_v2.py`：RF / LR，匯入 `LSTM_nested_cv_v2.load_patients`，前處理與外層折都相同。
-- `run_v2_all.bat`：跑完全部預先指定的分析，需要數小時。
+- `LSTM_nested_cv_v2.py`：nested CV（外層 5 折、內層 3 折加 Optuna）。缺失值處理是：不合理值 → NaN → 病人內 LOCF → 訓練折中位數。epoch 數取內層最佳 epoch 的中位數，門檻用內層 OOF 的 Youden 指數。輸出 OOF 預測、permutation importance（只在真實時間步之間打亂）、捷徑探針、截斷測試（視窗往前移 k 筆，`TRUNC_KS`）。
+- `baselines_nested_v2.py`：RF / LR，匯入 `LSTM_nested_cv_v2.load_patients`，前處理與外層折都相同；也輸出 RF / LR / NEWS2 / MEWS 的截斷測試。
+- `delong_v2.py`：各方法 OOF 預測的配對 DeLong 檢定（15 組，Holm 校正），輸出 `results_delong_v2.csv`。
+- `run_v2_all.bat`：跑完全部預先指定的分析，需要數小時。LSTM 以 `--one-fold` 每折開一個新 process（Windows 上 TF 2.21 會累積記憶體），checkpoint 存在 `ckpt_*/`，中斷後重跑會接續。
 - `v2_修補說明.md`：v2 修了哪些漏洞，以及哪些舊結果不可再報告。
 - 工作目錄中（可能尚未 commit）：`early_warning_scores.py`、`evaluate_ews_baseline.py`、`run_ews_baseline.py`、`test_ews.py` 是 MEWS/NEWS/NEWS2 基準與單元測試。
 

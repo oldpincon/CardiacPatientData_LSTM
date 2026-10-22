@@ -49,7 +49,9 @@ LSTM_nested_cv_v2.py — 修補漏洞版（2026-10-14）
 """
 
 import argparse
+import gc
 import json
+import pickle
 import time
 import warnings
 
@@ -98,7 +100,8 @@ FEATURE_GROUPS = {
 # ============================================================
 # 1. 資料載入與「不需 fit 的」前處理（規則式，與切分無關，不會洩漏）
 # ============================================================
-def load_patients(use_labs: bool, min_records: int):
+def load_patients(use_labs: bool, min_records: int, full: bool = False):
+    """full=True 時多回傳每位病人 LOCF 後的完整序列（截斷測試用）。"""
     df = pd.read_csv(DATA_RAW)
     df = df.sort_values("ID", kind="mergesort").reset_index(drop=True)  # 病人內保留原列順序
     df["IHCA"] = 1 - df["Outcome"]                                      # 0 → IHCA
@@ -118,17 +121,48 @@ def load_patients(use_labs: bool, min_records: int):
     df[cols] = df.groupby("ID", sort=False)[cols].ffill()
 
     n_records = df.groupby("ID", sort=False).size()
-    X, y, ids, nrec, lab_meas = [], [], [], [], []
+    X, y, ids, nrec, lab_meas, X_full = [], [], [], [], [], []
     for pid, g in df.groupby("ID", sort=False):
         if len(g) < min_records:
             continue
         X.append(g[cols].values[-MAX_LEN:].astype("float32"))  # 尚未填補，可能含 NaN
+        X_full.append(g[cols].values.astype("float32"))
         y.append(int(g["IHCA"].iloc[-1]))
         ids.append(pid)
         nrec.append(int(n_records[pid]))
         lab_meas.append(float(g["_lab_measured"].values[-MAX_LEN:].mean()))
-    return (X, np.array(y), np.array(ids), np.array(nrec), np.array(lab_meas),
-            cols, n_removed)
+    out = (X, np.array(y), np.array(ids), np.array(nrec), np.array(lab_meas),
+           cols, n_removed)
+    return out + (X_full,) if full else out
+
+
+# ============================================================
+# 1b. 截斷測試：視窗整段往前移 k 筆（長度不變），檢查模型是否只靠事件前最後幾筆
+#     k 事先指定；紀錄 ≤ k 筆的病人無法往前移，該 k 下排除
+# ============================================================
+TRUNC_KS = [1, 2, 3, 5, 10]
+
+
+def shifted_window(x_full, k):
+    return x_full[:-k][-MAX_LEN:] if len(x_full) > k else None
+
+
+def truncation_summary(oof, trunc):
+    """oof：原始視窗預測（k=0）；trunc：各 k 的預測。兩者皆需 repeat/fold/ID/y/proba。
+    pooled AUC 用 repeat 1；k=0 的對照只取「該 k 下仍可往前移」的同一批病人，才能公平比較。"""
+    rows = []
+    base = pd.concat([oof.assign(k=0), trunc])
+    for k, g in base.groupby("k"):
+        g1 = g[g.repeat == 1]
+        ref = oof[(oof.repeat == 1) & oof.ID.isin(g1.ID)]
+        fold_auc = [roc_auc_score(h.y, h.proba) for _, h in g.groupby(["repeat", "fold"])
+                    if h.y.nunique() == 2]
+        lo, hi = bootstrap_ci(g1.y.values, g1.proba.values)
+        rows.append({"k": k, "n_patients": len(g1), "n_ihca": int(g1.y.sum()),
+                     "fold_auc_mean": np.mean(fold_auc), "fold_auc_sd": np.std(fold_auc, ddof=1),
+                     "pooled_auc_r1": roc_auc_score(g1.y, g1.proba), "ci_low": lo, "ci_high": hi,
+                     "pooled_auc_r1_k0_same_patients": roc_auc_score(ref.y, ref.proba)})
+    return pd.DataFrame(rows)
 
 
 # ============================================================
@@ -229,6 +263,8 @@ def inner_search(X_tr, y_tr, n_trials, seed, max_epochs, patience):
             losses.append(float(np.min(vl)))
             epochs.append(int(np.argmin(vl)) + 1)
             oof[iva] = m.predict(Xb, verbose=0).ravel()
+            del m, h                       # 釋放模型，避免 trial 間記憶體累積
+            gc.collect()
             trial.report(float(np.mean(losses)), step=k)
             if trial.should_prune():
                 raise optuna.TrialPruned()
@@ -302,13 +338,17 @@ def main():
     ap.add_argument("--trials", type=int, default=40)
     ap.add_argument("--importance-repeats", type=int, default=20)
     ap.add_argument("--quick", action="store_true", help="只用來測試程式能否執行")
+    ap.add_argument("--one-fold", action="store_true",
+                    help="只跑一個尚未完成的折就結束（exit code 3），由外部迴圈重複呼叫；"
+                         "TF 在同一程序內反覆建模型會累積記憶體，換新程序才會完全釋放")
     a = ap.parse_args()
 
     use_labs = a.analysis != "no_labs"
     min_records = MAX_LEN if a.analysis == "min10" else 1
     max_epochs, patience = (3, 1) if a.quick else (50, 8)
 
-    X, y, ids, nrec, lab_meas, cols, n_removed = load_patients(use_labs, min_records)
+    X, y, ids, nrec, lab_meas, cols, n_removed, X_full = load_patients(
+        use_labs, min_records, full=True)
     tag = f"v2_{a.analysis}"
     print(f"[{tag}] 病人 {len(y)}，IHCA {y.sum()}（{y.mean():.1%}）；特徵 {len(cols)} 個")
     print(f"不合理值清除筆數：{n_removed}")
@@ -316,12 +356,31 @@ def main():
     left = int(sum(np.isnan(x).sum() for x in X))
     print(f"LOCF 後視窗內仍缺失的格數（將以訓練折中位數填補）：{left}")
 
-    fold_rows, oof_rows, imp_rows, param_rows = [], [], [], []
+    # 每折結果存檔：中斷後重跑相同指令會跳過已完成的折（設定不同則用不同資料夾）
+    ckpt_dir = (f"ckpt_{tag}_t{a.trials}_imp{a.importance_repeats}_trunc"
+                f"{'_quick' if a.quick else ''}")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    fold_rows, oof_rows, imp_rows, param_rows, trunc_rows = [], [], [], [], []
     t0 = time.time()
     for r in range(a.repeats):
         seed = BASE_SEED + r
         outer = StratifiedKFold(N_OUTER, shuffle=True, random_state=seed)
         for f, (tr, te) in enumerate(outer.split(np.zeros(len(y)), y), start=1):
+            ckpt = os.path.join(ckpt_dir, f"r{r + 1}_f{f}.pkl")
+            if os.path.exists(ckpt):
+                with open(ckpt, "rb") as fh:
+                    saved = pickle.load(fh)
+                fold_rows += saved["fold"]
+                param_rows += saved["param"]
+                oof_rows += saved["oof"]
+                imp_rows += saved["imp"]
+                trunc_rows += saved["trunc"]
+                print(f"\n>>> repeat {r + 1}/{a.repeats} · fold {f}/{N_OUTER} 已完成，"
+                      f"讀取存檔 {ckpt}（AUC={saved['fold'][0]['auc']:.3f}）")
+                continue
+            n0 = (len(fold_rows), len(param_rows), len(oof_rows), len(imp_rows),
+                  len(trunc_rows))
             print(f"\n>>> repeat {r + 1}/{a.repeats} · fold {f}/{N_OUTER} "
                   f"(test n={len(te)}, 陽性 {y[te].sum()})  已用 {(time.time() - t0) / 60:.1f} 分")
             X_tr = [X[i] for i in tr]
@@ -361,6 +420,31 @@ def main():
                                              2 if a.quick else a.importance_repeats):
                 imp_rows.append({"repeat": r + 1, "fold": f, **ir})
 
+            # 截斷測試：同一個模型、同一個前處理，只把測試病人的視窗往前移
+            trunc_msg = []
+            for k in TRUNC_KS:
+                keep = [i for i in te if shifted_window(X_full[i], k) is not None]
+                Xk, _ = pp.transform([shifted_window(X_full[i], k) for i in keep])
+                pk = model.predict(Xk, verbose=0).ravel()
+                for i, p in zip(keep, pk):
+                    trunc_rows.append({"repeat": r + 1, "fold": f, "k": k, "ID": ids[i],
+                                       "y": y[i], "proba": p})
+                if len(np.unique(y[keep])) == 2:
+                    trunc_msg.append(f"k={k}:{roc_auc_score(y[keep], pk):.3f}")
+            print(f"    截斷測試 AUC  {'  '.join(trunc_msg)}")
+
+            with open(ckpt + ".tmp", "wb") as fh:
+                pickle.dump({"fold": fold_rows[n0[0]:], "param": param_rows[n0[1]:],
+                             "oof": oof_rows[n0[2]:], "imp": imp_rows[n0[3]:],
+                             "trunc": trunc_rows[n0[4]:]}, fh)
+            os.replace(ckpt + ".tmp", ckpt)    # 寫完才換名，避免中斷時留下壞檔
+            if a.one_fold:
+                print(f"    已存檔 {ckpt}；--one-fold 模式，結束程序以釋放記憶體")
+                raise SystemExit(3)
+            del model
+            tf.keras.backend.clear_session()
+            gc.collect()
+
     folds = pd.DataFrame(fold_rows)
     oof = pd.DataFrame(oof_rows)
     imp = pd.DataFrame(imp_rows)
@@ -368,6 +452,10 @@ def main():
     oof.to_csv(f"results_{tag}_oof.csv", index=False)
     imp.to_csv(f"results_{tag}_importance.csv", index=False)
     pd.DataFrame(param_rows).to_csv(f"results_{tag}_params.csv", index=False)
+    trunc = pd.DataFrame(trunc_rows)
+    trunc.to_csv(f"results_{tag}_truncation_oof.csv", index=False)
+    trunc_s = truncation_summary(oof, trunc)
+    trunc_s.to_csv(f"results_{tag}_truncation.csv", index=False)
 
     # ---------- 摘要 ----------
     summ = {"analysis": a.analysis, "n_patients": int(len(y)), "n_ihca": int(y.sum()),
@@ -395,6 +483,8 @@ def main():
     print(json.dumps(summ, ensure_ascii=False, indent=2))
     print("\n特徵重要性（跨折平均 AUC 下降）：")
     print(imp_s.round(4).to_string())
+    print("\n截斷測試（視窗往前移 k 筆）：")
+    print(trunc_s.round(3).to_string(index=False))
     print(f"\n總耗時 {(time.time() - t0) / 60:.1f} 分鐘；輸出檔 results_{tag}_*.csv / .json")
 
 

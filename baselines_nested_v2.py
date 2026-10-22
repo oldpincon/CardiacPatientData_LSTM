@@ -27,8 +27,28 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_pre
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from early_warning_scores import mews_row, news2_row
 from LSTM_nested_cv_v2 import (BASE_SEED, LABS, MAX_LEN, N_INNER, N_OUTER, STATIC,
-                               VITALS, bootstrap_ci, load_patients, youden_threshold)
+                               TRUNC_KS, VITALS, bootstrap_ci, load_patients, shifted_window,
+                               truncation_summary, youden_threshold)
+
+# 臨床評分（不需訓練）：名稱 → (逐筆計分函式, 視窗彙總方式, 臨床切點)
+EWS = {"NEWS2_last": (news2_row, "last", 5),
+       "MEWS_last": (mews_row, "last", 5),
+       "MEWS_max": (mews_row, "max", 5)}
+
+
+def ews_scores(x_list, cols):
+    """每位病人視窗的 EWS 分數（BT 由 °F 轉 °C）。截斷測試的臨床評分對照。"""
+    out = {name: [] for name in EWS}
+    for x in x_list:
+        rows = [dict(zip(cols, row.astype(float))) for row in x]
+        for r in rows:
+            r["BT"] = (r["BT"] - 32.0) * 5.0 / 9.0
+        for name, (fn, agg, _) in EWS.items():
+            s = [fn(r) for r in rows]
+            out[name].append(s[-1] if agg == "last" else max(s))
+    return {name: np.array(v, dtype=float) for name, v in out.items()}
 
 
 def summarize(X_list, cols):
@@ -76,11 +96,19 @@ def main():
     a = ap.parse_args()
     use_labs = a.analysis != "no_labs"
     min_records = MAX_LEN if a.analysis == "min10" else 1
-    X_list, y, ids, nrec, _, cols, _ = load_patients(use_labs, min_records)
+    X_list, y, ids, nrec, _, cols, _, X_full = load_patients(use_labs, min_records, full=True)
     X, names = summarize(X_list, cols)
     print(f"[baselines_v2_{a.analysis}] 病人 {len(y)}，IHCA {y.sum()}，摘要特徵 {X.shape[1]} 個")
 
-    fold_rows, oof_rows = [], []
+    # 截斷測試用：各 k 下可往前移的病人，及其往前移後的摘要特徵與 EWS 分數
+    shifted = {}
+    for k in TRUNC_KS:
+        keep = np.array([i for i in range(len(y)) if shifted_window(X_full[i], k) is not None])
+        wins = [shifted_window(X_full[i], k) for i in keep]
+        shifted[k] = (keep, summarize(wins, cols)[0], ews_scores(wins, cols))
+    ews0 = ews_scores(X_list, cols)
+
+    fold_rows, oof_rows, trunc_rows = [], [], []
     for r in range(a.repeats):
         seed = BASE_SEED + r
         outer = StratifiedKFold(N_OUTER, shuffle=True, random_state=seed)
@@ -103,11 +131,36 @@ def main():
                 for i, pi in zip(te, p):
                     oof_rows.append({"model": name, "repeat": r + 1, "fold": f, "ID": ids[i],
                                      "y": y[i], "proba": pi, "pred": int(pi >= thr)})
+                for k, (keep, Xk, _) in shifted.items():
+                    sel = np.isin(keep, te)
+                    pk = gs.best_estimator_.predict_proba(Xk[sel])[:, 1]
+                    for i, pi in zip(keep[sel], pk):
+                        trunc_rows.append({"model": name, "repeat": r + 1, "fold": f, "k": k,
+                                           "ID": ids[i], "y": y[i], "proba": pi})
+            # EWS 不需訓練，但照相同外層折記錄，才能和模型逐折比較
+            for name, (_, _, cut) in EWS.items():
+                for i in te:
+                    oof_rows.append({"model": name, "repeat": r + 1, "fold": f, "ID": ids[i],
+                                     "y": y[i], "proba": ews0[name][i],
+                                     "pred": int(ews0[name][i] >= cut)})
+                for k, (keep, _, ek) in shifted.items():
+                    sel = np.isin(keep, te)
+                    for i, pi in zip(keep[sel], ek[name][sel]):
+                        trunc_rows.append({"model": name, "repeat": r + 1, "fold": f, "k": k,
+                                           "ID": ids[i], "y": y[i], "proba": pi})
 
     folds, oof = pd.DataFrame(fold_rows), pd.DataFrame(oof_rows)
+    trunc = pd.DataFrame(trunc_rows)
     tag = f"baselines_v2_{a.analysis}"
     folds.to_csv(f"results_{tag}_folds.csv", index=False)
-    oof.to_csv(f"results_{tag}_oof.csv", index=False)
+    oof[~oof.model.isin(EWS)].to_csv(f"results_{tag}_oof.csv", index=False)
+    trunc.to_csv(f"results_{tag}_truncation_oof.csv", index=False)
+    ts = pd.concat([truncation_summary(oof[oof.model == m], trunc[trunc.model == m])
+                    .assign(model=m) for m in oof.model.unique()])
+    ts = ts[["model"] + [c for c in ts.columns if c != "model"]]
+    ts.to_csv(f"results_{tag}_truncation.csv", index=False)
+    print("截斷測試（視窗往前移 k 筆）：")
+    print(ts.round(3).to_string(index=False))
     out = []
     for name, g in folds.groupby("model"):
         o = oof[(oof.model == name) & (oof.repeat == 1)]
