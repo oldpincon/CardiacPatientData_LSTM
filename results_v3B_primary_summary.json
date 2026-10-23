@@ -1,0 +1,30 @@
+{
+  "variant": "B",
+  "config": {
+    "multi": false,
+    "model": "small",
+    "hybrid": false,
+    "seeds": 1
+  },
+  "analysis": "primary",
+  "n_patients": 112,
+  "n_ihca": 19,
+  "repeats": 1,
+  "trials": 40,
+  "quick_test": false,
+  "auc_mean": 0.8349415204678362,
+  "auc_sd": 0.11049430598701514,
+  "recall_mean": 0.6833333333333333,
+  "recall_sd": 0.20749832663314555,
+  "precision_mean": 0.4655555555555555,
+  "precision_sd": 0.16388418072333286,
+  "f1_mean": 0.541965811965812,
+  "f1_sd": 0.14150475464696638,
+  "pooled_auc_per_repeat": [
+    0.8200339558573855
+  ],
+  "pooled_auc_repeat1_95ci": [
+    0.7167881438856533,
+    0.9116739130434783
+  ]
+}
