@@ -13,6 +13,11 @@ LSTM_v3.py — 預先指定的 LSTM 改善版本（2026-10-22）
   D  種子集成：沿用 v2 每折最佳參數與 epoch 數，外層 5 個種子平均（不重新調參）
   E  組合：A + B + D
 
+v4 版本（見 LSTM_v4_預先指定.md，輸出 results_v4<版本>_*）：
+  F  B + 外層 5 個種子平均
+  G  F + 生命徵象變化量特徵
+  H  F，但 Optuna 以內層驗證 AUC 挑參數
+
 資料前處理、外層／內層切分、epoch 數與門檻的決定方式、截斷測試都與 v2 相同
 （直接匯入 LSTM_nested_cv_v2）。測試時每位病人只用最後 10 筆。
 v3 不做 permutation importance 與捷徑探針（v2 已做過，前處理相同）。
@@ -45,7 +50,7 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.layers import LSTM, Concatenate, Dense, Dropout, Input, Masking
 
 from baselines_nested_v2 import summarize
-from LSTM_nested_cv_v2 import (BASE_SEED, MAX_LEN, N_INNER, N_OUTER, TRUNC_KS,
+from LSTM_nested_cv_v2 import (BASE_SEED, MAX_LEN, N_INNER, N_OUTER, TRUNC_KS, VITALS,
                                FoldPreprocessor, bootstrap_ci, build_model as build_v2,
                                class_weights, load_patients, set_seed, shifted_window,
                                truncation_summary, youden_threshold)
@@ -59,7 +64,20 @@ VARIANTS = {           # 多視窗、模型（v2 / small）、混合、種子數
     "C": {"multi": False, "model": "small", "hybrid": True, "seeds": 1},
     "D": {"multi": False, "model": "v2", "hybrid": False, "seeds": N_SEEDS},
     "E": {"multi": True, "model": "small", "hybrid": False, "seeds": N_SEEDS},
+    # v4（見 LSTM_v4_預先指定.md）：以 B 為基礎
+    "F": {"multi": False, "model": "small", "hybrid": False, "seeds": N_SEEDS},
+    "G": {"multi": False, "model": "small", "hybrid": False, "seeds": N_SEEDS, "delta": True},
+    "H": {"multi": False, "model": "small", "hybrid": False, "seeds": N_SEEDS,
+          "objective": "auc"},
 }
+V4 = {"F", "G", "H"}
+
+
+def add_delta(x, cols):
+    """G：每項生命徵象加上「與上一筆的差」，視窗第一筆為 0（NaN 留給中位數填補）。"""
+    v = x[:, [cols.index(c) for c in VITALS]]
+    d = np.vstack([np.zeros((1, v.shape[1]), dtype=v.dtype), np.diff(v, axis=0)])
+    return np.hstack([x, d])
 
 
 # ============================================================
@@ -84,11 +102,14 @@ class Encoder:
     """序列用 v2 的 FoldPreprocessor；混合版另外把摘要特徵做訓練折中位數填補與標準化。
     兩者都只用訓練病人的最後一個視窗 fit（與 v2 相同）。"""
 
-    def __init__(self, hybrid, cols):
-        self.hybrid, self.cols = hybrid, cols
+    def __init__(self, hybrid, cols, delta=False):
+        self.hybrid, self.cols, self.delta = hybrid, cols, delta
+
+    def _seq(self, X_list):
+        return [add_delta(x, self.cols) for x in X_list] if self.delta else X_list
 
     def fit(self, X_list):
-        self.pp = FoldPreprocessor().fit(X_list)
+        self.pp = FoldPreprocessor().fit(self._seq(X_list))
         if self.hybrid:
             S = summarize(X_list, self.cols)[0]
             self.imp = SimpleImputer(strategy="median").fit(S)
@@ -96,7 +117,7 @@ class Encoder:
         return self
 
     def transform(self, X_list):
-        seq = self.pp.transform(X_list)[0]
+        seq = self.pp.transform(self._seq(X_list))[0]
         if not self.hybrid:
             return seq
         S = summarize(X_list, self.cols)[0]
@@ -163,7 +184,8 @@ def inner_search(cfg, cols, X_full, tr, y, n_trials, seed, max_epochs, patience)
                  .split(np.zeros(len(tr)), y_tr))
     prepared = []
     for itr, iva in inner:
-        enc = Encoder(cfg["hybrid"], cols).fit([X_full[tr[i]][-MAX_LEN:] for i in itr])
+        enc = Encoder(cfg["hybrid"], cols, cfg.get("delta", False)).fit(
+            [X_full[tr[i]][-MAX_LEN:] for i in itr])
         wins, yw, ww = training_windows(X_full, tr[itr], y, cfg["multi"])
         Xa = enc.transform(wins)
         Xb = enc.transform([X_full[tr[i]][-MAX_LEN:] for i in iva])
@@ -183,9 +205,12 @@ def inner_search(cfg, cols, X_full, tr, y, n_trials, seed, max_epochs, patience)
                       sample_weight=sample_weights(y_tr[itr], yw, ww, p["cw_multiplier"]),
                       callbacks=[es], verbose=0)
             vl = h.history["val_loss"]
-            losses.append(float(np.min(vl)))
             epochs.append(int(np.argmin(vl)) + 1)
             oof[iva] = m.predict(Xb, verbose=0).ravel()
+            if cfg.get("objective") == "auc":    # H：以內層驗證 AUC 挑參數（取負值最小化）
+                losses.append(-roc_auc_score(y_tr[iva], oof[iva]))
+            else:
+                losses.append(float(np.min(vl)))
             del m, h
             gc.collect()
             trial.report(float(np.mean(losses)), step=k)
@@ -236,7 +261,8 @@ def main():
     n_seeds = 2 if (a.quick and cfg["seeds"] > 1) else cfg["seeds"]
 
     X, y, ids, nrec, _, cols, _, X_full = load_patients(use_labs, min_records, full=True)
-    tag = f"v3{a.variant}_{a.analysis}{'_quick' if a.quick else ''}"
+    tag = (f"v{4 if a.variant in V4 else 3}{a.variant}_{a.analysis}"
+           f"{'_quick' if a.quick else ''}")
     print(f"[{tag}] 病人 {len(y)}，IHCA {y.sum()}；特徵 {len(cols)} 個；設定 {cfg}")
 
     ckpt_dir = f"ckpt_{tag}_t{a.trials}"
@@ -268,7 +294,7 @@ def main():
                                                      seed * 10 + f, max_epochs, patience)
             print(f"    參數 {params} | epochs={n_epochs} | 門檻={thr:.3f}")
 
-            enc = Encoder(cfg["hybrid"], cols).fit([X[i] for i in tr])
+            enc = Encoder(cfg["hybrid"], cols, cfg.get("delta", False)).fit([X[i] for i in tr])
             wins, yw, ww = training_windows(X_full, tr, y, cfg["multi"])
             Xtr = enc.transform(wins)
             sw = sample_weights(y[tr], yw, ww, params["cw_multiplier"])
