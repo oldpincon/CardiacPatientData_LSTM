@@ -18,6 +18,13 @@
 - `delong_v2.py`：各方法 OOF 預測的配對 DeLong 檢定（15 組，Holm 校正），輸出 `results_delong_v2.csv`。
 - `run_v2_all.bat`：跑完全部預先指定的分析，需要數小時。LSTM 以 `--one-fold` 每折開一個新 process（Windows 上 TF 2.21 會累積記憶體），checkpoint 存在 `ckpt_*/`，中斷後重跑會接續。
 - `v2_修補說明.md`：v2 修了哪些漏洞，以及哪些舊結果不可再報告。
+
+## LSTM 改善（v3、v4，可報告的結果）
+- `LSTM_v3.py --variant {A..H}`：同一支程式包含 v3（A–E）與 v4（F–H）版本，前處理、外層折、內層調參都匯入 v2。輸出 `results_v3<版本>_*`、`results_v4<版本>_*`。
+- `LSTM_v3_預先指定.md`、`LSTM_v4_預先指定.md`：跑之前寫定的版本、比較方式與挑選規則，結果附在文末。
+- `select_v4.py`：依規則（三個分析平均 AUC 最高）挑 v4 最終版本；`delong_v3.py`、`delong_v4.py`：配對 DeLong + Holm。
+- 最終 LSTM 為 v4G（小模型 + 5 種子平均 + 生命徵象變化量），在新切分（repeat 2、3）確認後 AUC 0.81–0.86，仍未顯著優於 RF / LR / NEWS2。
+- 新增版本必須先寫預先指定文件並 commit，再跑；挑選後要用新的外層切分確認。
 - 工作目錄中（可能尚未 commit）：`early_warning_scores.py`、`evaluate_ews_baseline.py`、`run_ews_baseline.py`、`test_ews.py` 是 MEWS/NEWS/NEWS2 基準與單元測試。
 
 ## 舊程式（結果不可報告）
