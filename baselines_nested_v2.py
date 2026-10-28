@@ -51,9 +51,14 @@ def ews_scores(x_list, cols):
     return {name: np.array(v, dtype=float) for name, v in out.items()}
 
 
-def summarize(X_list, cols):
+DELTA_STATS = ["delta_last", "delta_min", "delta_max", "delta_absmean"]
+
+
+def summarize(X_list, cols, delta=False):
+    """delta=True 時每項生命徵象另加 4 個「與上一筆的差」特徵（見 變化量特徵_RF_預先指定.md）。"""
     feats, names = [], []
     t = np.arange(MAX_LEN, dtype=float)
+    n_vit = 6 + (len(DELTA_STATS) if delta else 0)
     for x in X_list:
         row = []
         for c in cols:
@@ -62,17 +67,22 @@ def summarize(X_list, cols):
                 ok = ~np.isnan(v)
                 vv = v[ok]
                 if len(vv) == 0:
-                    row += [np.nan] * 6
+                    row += [np.nan] * n_vit
                     continue
                 slope = np.polyfit(t[:len(v)][ok], vv, 1)[0] if len(vv) >= 2 else 0.0
                 row += [vv[-1], vv.mean(), vv.min(), vv.max(),
                         vv.std() if len(vv) > 1 else 0.0, slope]
+                if delta:
+                    d = np.diff(vv)
+                    row += ([d[-1], d.min(), d.max(), np.abs(d).mean()] if len(d)
+                            else [0.0] * len(DELTA_STATS))
             else:                      # 靜態與檢驗值：取最後值
                 row.append(v[-1])
         feats.append(row)
     for c in cols:
         if c in VITALS:
-            names += [f"{c}_{s}" for s in ["last", "mean", "min", "max", "std", "slope"]]
+            stats = ["last", "mean", "min", "max", "std", "slope"] + (DELTA_STATS if delta else [])
+            names += [f"{c}_{s}" for s in stats]
         else:
             names.append(f"{c}_last")
     return np.array(feats, dtype=float), names
@@ -93,11 +103,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--analysis", choices=["primary", "no_labs", "min10"], default="primary")
     ap.add_argument("--repeats", type=int, default=1)
+    ap.add_argument("--delta", action="store_true",
+                    help="加入生命徵象變化量特徵（見 變化量特徵_RF_預先指定.md）")
     a = ap.parse_args()
     use_labs = a.analysis != "no_labs"
     min_records = MAX_LEN if a.analysis == "min10" else 1
     X_list, y, ids, nrec, _, cols, _, X_full = load_patients(use_labs, min_records, full=True)
-    X, names = summarize(X_list, cols)
+    X, names = summarize(X_list, cols, a.delta)
     print(f"[baselines_v2_{a.analysis}] 病人 {len(y)}，IHCA {y.sum()}，摘要特徵 {X.shape[1]} 個")
 
     # 截斷測試用：各 k 下可往前移的病人，及其往前移後的摘要特徵與 EWS 分數
@@ -105,7 +117,7 @@ def main():
     for k in TRUNC_KS:
         keep = np.array([i for i in range(len(y)) if shifted_window(X_full[i], k) is not None])
         wins = [shifted_window(X_full[i], k) for i in keep]
-        shifted[k] = (keep, summarize(wins, cols)[0], ews_scores(wins, cols))
+        shifted[k] = (keep, summarize(wins, cols, a.delta)[0], ews_scores(wins, cols))
     ews0 = ews_scores(X_list, cols)
 
     fold_rows, oof_rows, trunc_rows = [], [], []
@@ -151,7 +163,7 @@ def main():
 
     folds, oof = pd.DataFrame(fold_rows), pd.DataFrame(oof_rows)
     trunc = pd.DataFrame(trunc_rows)
-    tag = f"baselines_v2_{a.analysis}"
+    tag = f"baselines_v2{'_delta' if a.delta else ''}_{a.analysis}"
     folds.to_csv(f"results_{tag}_folds.csv", index=False)
     oof[~oof.model.isin(EWS)].to_csv(f"results_{tag}_oof.csv", index=False)
     trunc.to_csv(f"results_{tag}_truncation_oof.csv", index=False)
